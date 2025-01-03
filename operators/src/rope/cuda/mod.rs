@@ -29,7 +29,7 @@ impl Rope<Gpu> for Operator {
     {
         SinCosTable {
             nctx: 0,
-            mem: queue_alloc.alloc(0),
+            mem: queue_alloc.alloc(1),
         }
     }
 
