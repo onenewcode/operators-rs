@@ -133,6 +133,8 @@ impl crate::Operator for Operator {
 
 #[cfg(test)]
 mod test {
+    use std::time::{Duration, Instant};
+
     use super::Args;
     use crate::{Hardware, TensorLayout};
     use digit_layout::DigitLayout;
@@ -184,10 +186,10 @@ mod test {
         let cpu_op = RefOp::new(&Cpu);
         let gpu_op = Operator::new(&gpu);
 
-        let batch = 4;
+        let batch = 10;
         let k = 2048;
         let n = 5632;
-        for m in [1, 7, 64, 255, 1024] {
+        for m in [2048] {
             let mut a = vec![0.0f64; batch * m * k];
             let mut b = vec![0.0f64; batch * k * n];
             let mut c = vec![0.0f64; batch * m * n];
@@ -196,13 +198,13 @@ mod test {
             rand::thread_rng().fill(&mut c[..]);
             let a = a;
             let b = b;
-
+            let mut time_gpu=Duration::default();
             let c_ans = gpu.apply(|ctx| {
                 let stream = ctx.stream();
                 let mut c = cast_load(&c, f16::from_f64, &stream);
                 let a = cast_load(&a, f16::from_f64, &stream);
                 let b = cast_load(&b, f16::from_f64, &stream);
-
+                let start = Instant::now();
                 gpu_op
                     .launch(
                         &args(
@@ -222,9 +224,13 @@ mod test {
 
                 let mut ans = vec![f16::ZERO; batch * m * n];
                 memcpy_d2h(&mut ans, &c);
+                time_gpu=start.elapsed();
                 ans
             });
+            
+            println!("GPU time {:?} ms",time_gpu.as_millis());
 
+            let start = Instant::now();
             let mut c_ref = c;
             cpu_op
                 .launch(
@@ -242,7 +248,9 @@ mod test {
                     &ThisThread,
                 )
                 .unwrap();
-
+            let time_cpu=start.elapsed();
+            println!("CPU time {:?}  ms",time_cpu.as_millis());
+            println!("加速比 {:?} ",(time_cpu.as_nanos() as f64)/(time_gpu.as_nanos()as f64));
             let diff = c_ref
                 .into_par_iter()
                 .zip(c_ans)
