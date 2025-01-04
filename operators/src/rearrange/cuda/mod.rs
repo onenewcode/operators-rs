@@ -256,7 +256,7 @@ mod test {
         use cuda::memcpy_d2h;
         use ndarray_layout::{ArrayLayout, Endian::BigEndian};
         use rand::Rng;
-
+        use std::time::{Duration, Instant};
         let Some(gpu) = Gpu::init() else {
             return;
         };
@@ -269,7 +269,7 @@ mod test {
         gpu_op.scheme(&dyn_args(dt), 0).unwrap();
 
         let nh = 32;
-        let seq = 7;
+        let seq = 1024;
         let dh = 128;
         let mut src = vec![0u32; nh * seq * dh];
         rand::thread_rng().fill(&mut src[..]);
@@ -278,7 +278,7 @@ mod test {
         let s_src = ArrayLayout::<3>::new_contiguous(&[nh, seq, dh], BigEndian, ele);
         let s_dst =
             ArrayLayout::<3>::new_contiguous(&[seq, nh, dh], BigEndian, ele).transpose(&[1, 0]);
-
+            let mut time_gpu=Duration::default();
         let dst_ans = gpu.apply(|ctx| {
             let stream = ctx.stream();
             #[cfg(use_nvidia)]
@@ -287,6 +287,7 @@ mod test {
             let rt = ctx;
             let src = rt.from_host(&src);
             let mut dst = rt.malloc::<u8>(src.len());
+            let start = Instant::now();
             gpu_op
                 .launch(
                     &args(
@@ -302,10 +303,14 @@ mod test {
                 )
                 .unwrap();
             let mut host = vec![0u32; nh * seq * dh];
+            time_gpu=start.elapsed();
+            let start = Instant::now();
             memcpy_d2h(&mut host, &dst);
+            println!("d2t time {:?}",start.elapsed().as_millis());
             host
         });
-
+        println!("GPU time {:?} ms",time_gpu.as_millis());
+        let start = Instant::now();
         let mut dst_ref = vec![0u32; seq * nh * dh];
         cpu_op
             .launch(
@@ -321,6 +326,9 @@ mod test {
                 &ThisThread,
             )
             .unwrap();
+        let time_cpu=start.elapsed();
+        println!("CPU time {:?}  ms",time_cpu.as_millis());
+        println!("加速比 {:?} ",(time_cpu.as_nanos() as f64)/(time_gpu.as_nanos()as f64));
         assert_eq!(dst_ans, dst_ref);
     }
 }

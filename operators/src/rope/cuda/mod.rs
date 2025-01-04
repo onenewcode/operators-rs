@@ -265,7 +265,7 @@ mod test {
         use cuda::memcpy_d2h;
         use half::f16;
         use rand::Rng;
-
+        use std::time::{Duration, Instant};
         let Some(gpu) = Gpu::init() else {
             return;
         };
@@ -276,13 +276,13 @@ mod test {
         gpu_op.scheme(&dyn_args(F16, U32), 0).unwrap();
 
         const NT: usize = 7;
-        let nh = 32;
-        let dh = 64;
+        let nh = 8192;
+        let dh = 8192;
 
         let mut t = vec![0.0f64; NT * nh * dh];
         rand::thread_rng().fill(&mut t[..]);
         let p: [u32; NT] = [0, 1, 2, 3, 7, 8, 1];
-
+        let mut time_gpu=Duration::default();
         let t_ans = gpu.apply(|ctx| {
             let stream = ctx.stream();
             #[cfg(use_nvidia)]
@@ -290,8 +290,8 @@ mod test {
             #[cfg(use_iluvatar)]
             let rt = ctx;
             let mut t = cast_load(&t, f16::from_f64, &stream);
-
             let p = rt.from_host(&p);
+            let start = Instant::now();
             gpu_op
                 .launch(
                     &args(
@@ -309,10 +309,14 @@ mod test {
                 )
                 .unwrap();
             let mut host = vec![f16::ZERO; NT * nh * dh];
+            time_gpu=start.elapsed();
+            let start = Instant::now();
             memcpy_d2h(&mut host, &t);
+            println!("d2t time {:?}",start.elapsed().as_millis());
             host
         });
-
+        println!("GPU time {:?} ms",time_gpu.as_millis());
+        let start = Instant::now();
         let mut t_ref = t;
         cpu_op
             .launch(
@@ -330,7 +334,9 @@ mod test {
                 &ThisThread,
             )
             .unwrap();
-
+        let time_cpu=start.elapsed();
+        println!("CPU time {:?}  ms",time_cpu.as_millis());
+        println!("加速比 {:?} ",(time_cpu.as_nanos() as f64)/(time_gpu.as_nanos()as f64));
         let diff = t_ref
             .into_iter()
             .zip(t_ans)

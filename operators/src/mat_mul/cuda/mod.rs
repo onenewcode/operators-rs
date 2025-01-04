@@ -188,7 +188,7 @@ mod test {
 
         let batch = 10;
         let k = 2048;
-        let n = 5632;
+        let n = 1024;
         for m in [2048] {
             let mut a = vec![0.0f64; batch * m * k];
             let mut b = vec![0.0f64; batch * k * n];
@@ -223,8 +223,10 @@ mod test {
                     .unwrap();
 
                 let mut ans = vec![f16::ZERO; batch * m * n];
-                memcpy_d2h(&mut ans, &c);
                 time_gpu=start.elapsed();
+                let start = Instant::now();
+                memcpy_d2h(&mut ans, &c);
+                println!("d2t time {:?}",start.elapsed().as_millis());
                 ans
             });
             

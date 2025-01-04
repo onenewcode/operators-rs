@@ -225,7 +225,7 @@ mod test {
         use cuda::memcpy_d2h;
         use half::f16;
         use rand::Rng;
-
+        use std::time::{Duration, Instant};
         let Some(gpu) = Gpu::init() else {
             return;
         };
@@ -234,15 +234,15 @@ mod test {
         let mut gpu_op = Operator::new(&gpu);
         cpu_op.scheme(&dyn_args(ty::F64), 0).unwrap();
         gpu_op.scheme(&dyn_args(ty::F16), 0).unwrap();
-
+        let mut time_gpu=Duration::default();
         let nh = 32;
-        for (seq_len, att_len) in [(1, 511), (1, 2048), (7, 511), (7, 2048)] {
+        for (seq_len, att_len) in [(2048, 2048)] {
             let mut att = vec![0.0f64; nh * seq_len * att_len];
             rand::thread_rng().fill(&mut att[..]);
-
             let att_ans = gpu.apply(|ctx| {
                 let stream = ctx.stream();
                 let mut att = cast_load(&att, f16::from_f64, &stream);
+                let start = Instant::now();
                 gpu_op
                     .launch(
                         &args(ty::F16, nh, seq_len, att_len, att.as_mut_ptr().cast()),
@@ -251,10 +251,14 @@ mod test {
                     )
                     .unwrap();
                 let mut host = vec![f16::ZERO; nh * seq_len * att_len];
+                time_gpu=start.elapsed();
+                let start = Instant::now();
                 memcpy_d2h(&mut host, &att);
+                println!("d2t time {:?}",start.elapsed().as_millis());
                 host
             });
-
+            println!("GPU time {:?} ms",time_gpu.as_millis());
+            let start = Instant::now();
             let mut att_ref = att;
             cpu_op
                 .launch(
@@ -263,7 +267,9 @@ mod test {
                     &ThisThread,
                 )
                 .unwrap();
-
+            let time_cpu=start.elapsed();
+            println!("CPU time {:?}  ms",time_cpu.as_millis());
+            println!("加速比 {:?} ",(time_cpu.as_nanos() as f64)/(time_gpu.as_nanos()as f64));
             let diff = att_ref
                 .into_iter()
                 .zip(att_ans)

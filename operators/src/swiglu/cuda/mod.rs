@@ -182,7 +182,7 @@ mod test {
         use cuda::memcpy_d2h;
         use half::f16;
         use rand::Rng;
-
+        use std::time::{Duration, Instant};
         let Some(gpu) = Gpu::init() else {
             return;
         };
@@ -192,19 +192,20 @@ mod test {
         cpu_op.scheme(&dyn_args(F64), 0).unwrap();
         gpu_op.scheme(&dyn_args(F16), 0).unwrap();
 
-        let n = 5632;
-        let d = 2048;
+        let n = 16384;
+        let d = 16384;
 
         let mut gate = vec![0.0f64; n * d];
         let mut up = vec![0.0f64; n * d];
         rand::thread_rng().fill(&mut gate[..]);
         rand::thread_rng().fill(&mut up[..]);
         let up = up;
-
+        let mut time_gpu=Duration::default();
         let gate_ans = gpu.apply(|ctx| {
             let stream = ctx.stream();
             let mut gate = cast_load(&gate, f16::from_f64, &stream);
             let up = cast_load(&up, f16::from_f64, &stream);
+            let start = Instant::now();
             gpu_op
                 .launch(
                     &args(F16, n, d, gate.as_mut_ptr().cast(), up.as_ptr().cast()),
@@ -212,11 +213,15 @@ mod test {
                     &stream,
                 )
                 .unwrap();
-            let mut host = vec![f16::ZERO; n * d];
+            let mut host: Vec<f16> = vec![f16::ZERO; n * d];
+            time_gpu=start.elapsed();
+            let start = Instant::now();
             memcpy_d2h(&mut host, &gate);
+            println!("d2t time {:?}",start.elapsed().as_millis());
             host
         });
-
+        println!("GPU time {:?} ms",time_gpu.as_millis());
+        let start = Instant::now();
         let mut gate_ref = gate;
         cpu_op
             .launch(
@@ -225,7 +230,9 @@ mod test {
                 &ThisThread,
             )
             .unwrap();
-
+        let time_cpu=start.elapsed();
+        println!("CPU time {:?}  ms",time_cpu.as_millis());
+        println!("加速比 {:?} ",(time_cpu.as_nanos() as f64)/(time_gpu.as_nanos()as f64));
         let diff = gate_ref
             .into_iter()
             .zip(gate_ans)
