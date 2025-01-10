@@ -1,8 +1,13 @@
-﻿use super::{args::Scheme, Add, Args};
+use super::{args::Scheme, Add, Args};
 use crate::{
-    cuda::{Gpu, Handle, ModuleBox}, ByteOf, LaunchError, QueueAlloc, SchemeError
+    cuda::{Gpu, Handle, ModuleBox},
+    utils::gcd,
+    ByteOf, LaunchError, QueueAlloc, SchemeError,
 };
-use std::{ffi::{c_uint, CString}, sync::Arc};
+use std::{
+    ffi::{c_uint, CString},
+    sync::Arc,
+};
 
 pub struct Operator {
     _handle: Arc<Handle>,
@@ -47,18 +52,43 @@ impl crate::Operator for Operator {
     ) -> Result<(), LaunchError>
     where
         QA: QueueAlloc<Hardware = Self::Hardware>,
-    {   let scheme = Scheme::new(args)?;
-        let strids_size=scheme.idx_strides().len() as i32;
-        let idx_strides = queue_alloc.queue().from_host(scheme.idx_strides()).as_ptr();
-        let c_strides = queue_alloc.queue().from_host(scheme.c_strides()).as_ptr();
-        let a_strides = queue_alloc.queue().from_host(scheme.a_strides()).as_ptr();
-        let b_strides = queue_alloc.queue().from_host(scheme.b_strides()).as_ptr();
-        let params = cuda::params![args.c_base,c_strides,args.a_base,a_strides,args.b_base,b_strides,0,idx_strides,strids_size];
-        let block = self.max_threads_block;
+    {
+        let size = args.c_layout.dt().nbytes() as isize;
+        let cast = |strides: &[isize]| -> Vec<isize> { strides.iter().map(|x| x / size).collect() };
 
+        let scheme = Scheme::new(args)?;
+        let strids_size = scheme.idx_strides().len() as i32;
+        let idx_strides = queue_alloc
+            .queue()
+            .from_host(&cast(scheme.idx_strides()))
+            .as_ptr();
+        let c_strides = queue_alloc
+            .queue()
+            .from_host(&cast(scheme.c_strides()))
+            .as_ptr();
+        let a_strides = queue_alloc
+            .queue()
+            .from_host(&cast(scheme.a_strides()))
+            .as_ptr();
+        let b_strides = queue_alloc
+            .queue()
+            .from_host(&cast(scheme.b_strides()))
+            .as_ptr();
+        let params = cuda::params![
+            args.c_base,
+            c_strides,
+            args.a_base,
+            a_strides,
+            args.b_base,
+            b_strides,
+            0,
+            idx_strides,
+            strids_size
+        ];
+        let block = gcd(self.max_threads_block, scheme.count());
         self.module.launch(
             CString::new(NAME).unwrap(),
-            ((scheme.count()+block-1)/block) as c_uint,
+            ((scheme.count() + block - 1) / block) as c_uint,
             block as u32,
             params.as_ptr(),
             0,
@@ -94,7 +124,7 @@ mod test {
     use super::{Args, Gpu, Operator};
     use crate::{dyn_, Hardware, Operator as _, TensorLayout};
     use digit_layout::{
-        types::F16,
+        types::{F16, F64},
         DigitLayout,
     };
 
@@ -108,6 +138,24 @@ mod test {
             a_base: null(),
             b_layout: layout.clone(),
             b_base: null(),
+        }
+    }
+    fn args<H: Hardware>(
+        dt: DigitLayout,
+        n: usize,
+        h: usize,
+        w: usize,
+        c_base: *mut H::Byte,
+        a_base: *const H::Byte,
+        b_base: *const H::Byte,
+    ) -> Args<H> {
+        Args {
+            c_layout: TensorLayout::new_contiguous(dt, &[n, h, w]),
+            c_base,
+            a_layout: TensorLayout::new_contiguous(dt, &[n, h, w]),
+            a_base,
+            b_layout: TensorLayout::new_contiguous(dt, &[n, h, w]),
+            b_base,
         }
     }
     #[test]
@@ -130,5 +178,87 @@ mod test {
             );
         })
     }
-}
 
+    #[test]
+    fn test_compute() {
+        use super::super::common_cpu::Operator as RefOp;
+        use crate::{
+            common_cpu::{Cpu, ThisThread},
+            cuda::cast_load,
+            test_utils::{Diff, ErrorCollector},
+        };
+        use cuda::memcpy_d2h;
+        use half::f16;
+        use rand::Rng;
+
+        let Some(gpu) = Gpu::init() else {
+            return;
+        };
+
+        let mut cpu_op = RefOp::new(&Cpu);
+        let mut gpu_op = Operator::new(&gpu);
+        cpu_op.scheme(&dyn_args(F64), 0).unwrap();
+        gpu_op.scheme(&dyn_args(F16), 0).unwrap();
+
+        let n = 1;
+        let h = 1024;
+        let w = 1024;
+        let len = n * h * w;
+        let mut c = vec![0.0f64; len];
+        let mut a = vec![0.1f64; len];
+        let mut b = vec![0.1f64; len];
+        rand::thread_rng().fill(&mut a[..]);
+        rand::thread_rng().fill(&mut b[..]);
+        let data_ans = gpu.apply(|ctx| {
+            let stream = ctx.stream();
+            let mut c = cast_load(&c, f16::from_f64, &stream);
+            let a = cast_load(&a, f16::from_f64, &stream);
+            let b = cast_load(&b, f16::from_f64, &stream);
+            gpu_op
+                .launch(
+                    &args(
+                        F16,
+                        n,
+                        h,
+                        w,
+                        c.as_mut_ptr().cast(),
+                        a.as_ptr().cast(),
+                        b.as_ptr().cast(),
+                    ),
+                    &mut [],
+                    &stream,
+                )
+                .unwrap();
+            let mut host = vec![f16::ZERO; len];
+            memcpy_d2h(&mut host, &c);
+            host
+        });
+        cpu_op
+            .launch(
+                &args(
+                    F64,
+                    n,
+                    h,
+                    w,
+                    c.as_mut_ptr().cast(),
+                    a.as_ptr().cast(),
+                    b.as_ptr().cast(),
+                ),
+                &mut [],
+                &ThisThread,
+            )
+            .unwrap();
+        let diff = c
+            .into_iter()
+            .zip(data_ans)
+            .map(|(a, b)| Diff::new(a, b.to_f64()))
+            .collect::<Vec<_>>();
+
+        let mut ec = ErrorCollector::new(f16::EPSILON.to_f64(), 0.);
+        diff.into_iter().for_each(|diff| ec.push(diff));
+        println!("{ec}");
+
+        let (out, count) = ec.summary();
+        assert!(out * 1000 <= count);
+    }
+}

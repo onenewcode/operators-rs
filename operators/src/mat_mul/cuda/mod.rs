@@ -198,7 +198,7 @@ mod test {
             rand::thread_rng().fill(&mut c[..]);
             let a = a;
             let b = b;
-            let mut time_gpu=Duration::default();
+            let mut time_gpu = Duration::default();
             let c_ans = gpu.apply(|ctx| {
                 let stream = ctx.stream();
                 let mut c = cast_load(&c, f16::from_f64, &stream);
@@ -223,14 +223,14 @@ mod test {
                     .unwrap();
 
                 let mut ans = vec![f16::ZERO; batch * m * n];
-                time_gpu=start.elapsed();
+                time_gpu = start.elapsed();
                 let start = Instant::now();
                 memcpy_d2h(&mut ans, &c);
-                println!("d2t time {:?}",start.elapsed().as_millis());
+                println!("d2t time {:?}", start.elapsed().as_millis());
                 ans
             });
-            
-            println!("GPU time {:?} ms",time_gpu.as_millis());
+
+            println!("GPU time {:?} ms", time_gpu.as_millis());
 
             let start = Instant::now();
             let mut c_ref = c;
@@ -250,9 +250,12 @@ mod test {
                     &ThisThread,
                 )
                 .unwrap();
-            let time_cpu=start.elapsed();
-            println!("CPU time {:?}  ms",time_cpu.as_millis());
-            println!("加速比 {:?} ",(time_cpu.as_nanos() as f64)/(time_gpu.as_nanos()as f64));
+            let time_cpu = start.elapsed();
+            println!("CPU time {:?}  ms", time_cpu.as_millis());
+            println!(
+                "加速比 {:?} ",
+                (time_cpu.as_nanos() as f64) / (time_gpu.as_nanos() as f64)
+            );
             let diff = c_ref
                 .into_par_iter()
                 .zip(c_ans)

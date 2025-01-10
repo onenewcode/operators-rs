@@ -278,7 +278,7 @@ mod test {
         let s_src = ArrayLayout::<3>::new_contiguous(&[nh, seq, dh], BigEndian, ele);
         let s_dst =
             ArrayLayout::<3>::new_contiguous(&[seq, nh, dh], BigEndian, ele).transpose(&[1, 0]);
-            let mut time_gpu=Duration::default();
+        let mut time_gpu = Duration::default();
         let dst_ans = gpu.apply(|ctx| {
             let stream = ctx.stream();
             #[cfg(use_nvidia)]
@@ -303,13 +303,13 @@ mod test {
                 )
                 .unwrap();
             let mut host = vec![0u32; nh * seq * dh];
-            time_gpu=start.elapsed();
+            time_gpu = start.elapsed();
             let start = Instant::now();
             memcpy_d2h(&mut host, &dst);
-            println!("d2t time {:?}",start.elapsed().as_millis());
+            println!("d2t time {:?}", start.elapsed().as_millis());
             host
         });
-        println!("GPU time {:?} ms",time_gpu.as_millis());
+        println!("GPU time {:?} ms", time_gpu.as_millis());
         let start = Instant::now();
         let mut dst_ref = vec![0u32; seq * nh * dh];
         cpu_op
@@ -326,9 +326,12 @@ mod test {
                 &ThisThread,
             )
             .unwrap();
-        let time_cpu=start.elapsed();
-        println!("CPU time {:?}  ms",time_cpu.as_millis());
-        println!("加速比 {:?} ",(time_cpu.as_nanos() as f64)/(time_gpu.as_nanos()as f64));
+        let time_cpu = start.elapsed();
+        println!("CPU time {:?}  ms", time_cpu.as_millis());
+        println!(
+            "加速比 {:?} ",
+            (time_cpu.as_nanos() as f64) / (time_gpu.as_nanos() as f64)
+        );
         assert_eq!(dst_ans, dst_ref);
     }
 }

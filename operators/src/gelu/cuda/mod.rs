@@ -1,13 +1,15 @@
 use super::{args::Meta, Args, Gelu};
 use crate::{
-    get_static,
     cuda::{Gpu, Handle, ModuleBox},
-    strides_not_support, type_not_support,
+    get_static, strides_not_support, type_not_support,
     utils::gcd,
     ByteOf, LaunchError, QueueAlloc, SchemeError,
 };
 use digit_layout::types::F16;
-use std::{ffi::{c_uint, CString}, sync::Arc};
+use std::{
+    ffi::{c_uint, CString},
+    sync::Arc,
+};
 
 pub struct Operator {
     _handle: Arc<Handle>,
@@ -54,10 +56,7 @@ impl crate::Operator for Operator {
         QA: QueueAlloc<Hardware = Self::Hardware>,
     {
         let Meta { dt, n, d } = args.meta()?;
-        let Args {
-            layout,
-            base,
-        } = args;
+        let Args { layout, base } = args;
         let &[_, ds] = layout.strides() else {
             unreachable!()
         };
@@ -70,7 +69,7 @@ impl crate::Operator for Operator {
         }
 
         let unit = dt.nbytes() as isize;
-        if  ds != unit {
+        if ds != unit {
             return Err(strides_not_support("").into());
         };
 
@@ -79,7 +78,7 @@ impl crate::Operator for Operator {
 
         self.module.launch(
             CString::new(NAME).unwrap(),
-            ((n*d+block-1)/block) as c_uint,
+            ((n * d + block - 1) / block) as c_uint,
             block as u32,
             params.as_ptr(),
             0,
@@ -117,12 +116,7 @@ mod test {
             base: null_mut(),
         }
     }
-    fn args<H: Hardware>(
-        dt: DigitLayout,
-        n: usize,
-        d: usize,
-        base: *mut H::Byte,
-    ) -> Args<H> {
+    fn args<H: Hardware>(dt: DigitLayout, n: usize, d: usize, base: *mut H::Byte) -> Args<H> {
         let layout = TensorLayout::new_contiguous(dt, &[n, d]);
         Args {
             layout: layout.clone(),
@@ -182,11 +176,7 @@ mod test {
             let stream = ctx.stream();
             let mut data = cast_load(&data, f16::from_f64, &stream);
             gpu_op
-                .launch(
-                    &args(F16, n, d, data.as_mut_ptr().cast()),
-                    &mut [],
-                    &stream,
-                )
+                .launch(&args(F16, n, d, data.as_mut_ptr().cast()), &mut [], &stream)
                 .unwrap();
             let mut host = vec![f16::ZERO; n * d];
             memcpy_d2h(&mut host, &data);
@@ -216,4 +206,3 @@ mod test {
         assert!(out * 1000 <= count);
     }
 }
-
