@@ -93,12 +93,14 @@ impl crate::Operator for Operator {
         let params =
             cuda::params![dst_base, src_base, idx_base, b, bsd, msd, nsd, kss, nss, bsi, msi];
         let block = gcd(self.max_threads_block, n);
+        let p=(n + block - 1) / block;
+        let dsf=b * b * idx_layout.dt().nbytes();
         self.module.launch(
             CString::new(NAME).unwrap(),
-            (b as _, m as _, ((n + block - 1) / block) as _),
+            (b as _, m as _,  p as _),
             block as u32,
             params.as_ptr(),
-            b * b * idx_layout.dt().nbytes(),
+            dsf,
             queue_alloc.queue(),
         );
         Ok(())
@@ -135,7 +137,7 @@ mod test {
     use crate::{cuda::cast_load, dyn_, Hardware, Operator as _, TensorLayout};
     use cuda::memcpy_d2h;
     use digit_layout::{
-        types::{F16, F64, U64},
+        types::{F16, F64, U32},
         DigitLayout,
     };
     use half::f16;
@@ -167,7 +169,7 @@ mod test {
             dst_base: d_base,
             src_layout: TensorLayout::new_contiguous(dt, &[k, n]),
             src_base: s_base,
-            idx_layout: TensorLayout::new_contiguous(U64, &[b, m]),
+            idx_layout: TensorLayout::new_contiguous(U32, &[b, m]),
             idx_base: i_base,
         }
     }
@@ -217,14 +219,14 @@ mod test {
         let k = 512;
         let mut d = vec![0.1f64; b * m * n];
         let mut s = vec![0.1f64; k * n];
-        let i: Vec<u64> = (0..=m).cycle().take(m * b).map(|x| x as u64).collect(); // 收集结果到 Vec 中
+        let i: Vec<u32> = (0..=m).cycle().take(m * b).map(|x| x as u32).collect(); // 收集结果到 Vec 中
         rand::thread_rng().fill(&mut d[..]);
         rand::thread_rng().fill(&mut s[..]);
         let data_ans = gpu.apply(|ctx| {
             let stream = ctx.stream();
             let mut d = cast_load(&d, f16::from_f64, &stream);
             let s = cast_load(&s, f16::from_f64, &stream);
-            let i = cast_load(&i, u64::from, &stream);
+            let i = cast_load(&i, u32::from, &stream);
             gpu_op
                 .launch(
                     &args(
@@ -270,8 +272,8 @@ mod test {
         let mut ec = ErrorCollector::new(f16::EPSILON.to_f64(), 0.);
         diff.into_iter().for_each(|diff| ec.push(diff));
         println!("{ec}");
-
-        // let (out, count) = ec.summary();
-        // assert!(out * 1000 <= count);
+        
+        let (out, count) = ec.summary();
+        assert!(out * 1000 <= count);
     }
 }
