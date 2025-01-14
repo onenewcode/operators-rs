@@ -93,10 +93,10 @@ impl crate::Operator for Operator {
         let params =
             cuda::params![dst_base, src_base, idx_base, bsd, msd, nsd, kss, nss, bsi, msi];
         let block = gcd(self.max_threads_block, n);
-        let p=(n + block - 1) / block;
+        let dimx=(n + block - 1) / block;
         self.module.launch(
             CString::new(NAME).unwrap(),
-            (b as _, m as _,  p as _),
+            ( dimx as _,m as _,b as _),
             block as u32,
             params.as_ptr(),
             0,

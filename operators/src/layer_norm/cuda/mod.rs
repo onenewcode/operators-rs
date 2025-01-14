@@ -1,7 +1,7 @@
 ﻿use std::{ffi::CString, sync::Arc};
 
 use super::{Args, LayerNorm};
-use crate::{cuda::{Gpu, Handle, ModuleBox}, utils::gcd, ByteOf, LaunchError, QueueAlloc, SchemeError};
+use crate::{cuda::{Gpu, Handle, ModuleBox}, get_static, layer_norm::args::Meta, utils::gcd, ByteOf, LaunchError, QueueAlloc, SchemeError};
 
 pub struct Operator {
     _handle: Arc<Handle>,
@@ -46,47 +46,58 @@ impl crate::Operator for Operator {
     where
         QA: QueueAlloc<Hardware = Self::Hardware>,
     {
-        args.meta()?;
-        // let Meta { dt_w, dt_a, n, d } = args.meta()?;
-        // let Args {
-        //     y_layout,
-        //     y_base,
-        //     x_layout,
-        //     x_base,
-        //     scale_layout,
-        //     scale_base,
-        //     bias_layout,
-        //     bias_base,
-        //     epsilon,
-        // } = args;
-        // let &[nsy, dsy] = y_layout.strides() else {
-        //     unreachable!()
-        // };
-        // let &[nsx, dsx] = x_layout.strides() else {
-        //     unreachable!()
-        // };
-        // let &[dss] = scale_layout.strides() else {
-        //     unreachable!()
-        // };
-        // let &[dsb] = bias_layout.strides() else {
-        //     unreachable!()
-        // };
+        let Meta { dt_w, dt_a, n, d } = args.meta()?;
+        let Args {
+            y_layout,
+            y_base,
+            x_layout,
+            x_base,
+            scale_layout,
+            scale_base,
+            bias_layout,
+            bias_base,
+            epsilon,
+        } = args;
+        let &[nsy, dsy] = y_layout.strides() else {
+            unreachable!()
+        };
+        let &[nsx, dsx] = x_layout.strides() else {
+            unreachable!()
+        };
+        let &[dss] = scale_layout.strides() else {
+            unreachable!()
+        };
+        let &[dsb] = bias_layout.strides() else {
+            unreachable!()
+        };
 
-        // get_static! {
-        //     n   d
-        //     nsy dsy
-        //     nsx dsx
-        //         dss
-        //         dsb
-        // }
+        get_static! {
+            n   d
+            nsy dsy
+            nsx dsx
+                dss
+                dsb
+        }
 
-
-        let params = cuda::params![];
-        let block = gcd(self.max_threads_block, 1);
-
+        fn cast(strides: &[isize], size: usize) -> Vec<isize> {
+            strides.iter().map(|x| x / size as isize).collect()
+        }
+        let &[nsy, dsy,nsx, dsx]=cast(&[nsy, dsy,nsx, dsx], dt_a.nbytes()).as_slice() else {
+            unreachable!()
+        };
+        let &[dss
+        ,dsb]=cast(&[dss
+            ,dsb], dt_w.nbytes()).as_slice() else {
+            unreachable!()
+        };
+        let params = cuda::params![y_base,x_base,scale_base,bias_base,epsilon, d,nsy, dsy,nsx, dsx,
+            dss
+            ,dsb];
+        let block = gcd(self.max_threads_block, d);
+        let dimx=(d + block - 1) / block;
         self.module.launch(
             CString::new(NAME).unwrap(),
-            block as u32,
+            (dimx as _,n as _),
             block as u32,
             params.as_ptr(),
             0,
@@ -177,12 +188,12 @@ mod test {
         use super::super::common_cpu::Operator as RefOp;
         use crate::{
             common_cpu::{Cpu, ThisThread},
-            // cuda::cast_load,
-            // test_utils::{Diff, ErrorCollector},
+            cuda::cast_load,
+            test_utils::{Diff, ErrorCollector},
         };
-        // use cuda::memcpy_d2h;
-        // use half::f16;
-        // use rand::Rng;
+        use cuda::memcpy_d2h;
+        use half::f16;
+        use rand::Rng;
 
         let Some(gpu) = Gpu::init() else {
             return;
@@ -191,29 +202,33 @@ mod test {
         let mut cpu_op = RefOp::new(&Cpu);
         let mut gpu_op = Operator::new(&gpu);
 
-        let n = 2;
-        let d = 512;
+        let n = 1024;
+        let d = 1024;
         let epsilon=1.0f32;
         cpu_op.scheme(&dyn_args(F64), 0).unwrap();
         gpu_op.scheme(&dyn_args(F16), 0).unwrap();
-        let y = vec![1.0f64; n * d];
-        let  x = vec![1.0f64; n * d];
-        let  scale = vec![1.0f64; d];
-        let  bias = vec![1.0f64; d];
-        // rand::thread_rng().fill(&mut y[..]);
-        // rand::thread_rng().fill(&mut x[..]);
-        // rand::thread_rng().fill(&mut scale[..]);
-        // rand::thread_rng().fill(&mut bias[..]);
-        // let data_ans = gpu.apply(|ctx| {
-        //     let stream = ctx.stream();
-        //     let mut data = cast_load(&data, f16::from_f64, &stream);
-        //     gpu_op
-        //         .launch(&args(F16, n, d, data.as_mut_ptr().cast()), &mut [], &stream)
-        //         .unwrap();
-        //     let mut host = vec![f16::ZERO; n * d];
-        //     memcpy_d2h(&mut host, &data);
-        //     host
-        // });
+        let mut y = vec![0.0f64; n * d];
+        let mut x = vec![0.0f64; n * d];
+        let mut scale = vec![0.0f64; d];
+        let mut bias = vec![0.0f64; d];
+        rand::thread_rng().fill(&mut y[..]);
+        rand::thread_rng().fill(&mut x[..]);
+        rand::thread_rng().fill(&mut scale[..]);
+        rand::thread_rng().fill(&mut bias[..]);
+        let data_ans = gpu.apply(|ctx| {
+            let stream = ctx.stream();
+            let mut data = cast_load(&y, f16::from_f64, &stream);
+            let x=cast_load(&x, f16::from_f64,&stream);
+            let scale=cast_load(&scale, f16::from_f64,&stream);
+            let bias=cast_load(&bias, f16::from_f64,&stream);
+            gpu_op
+                .launch(&args(F16, n, d, data.as_mut_ptr().cast(),x.as_ptr().cast(),scale.as_ptr().cast(),bias.as_ptr().cast(),epsilon)
+                , &mut [], &stream)
+                .unwrap();
+            let mut host = vec![f16::ZERO; n * d];
+            memcpy_d2h(&mut host, &data);
+            host
+        });
 
         let mut data_ref = y;
         cpu_op
@@ -223,18 +238,18 @@ mod test {
                 &ThisThread,
             )
             .unwrap();
-        data_ref.iter().take(10).for_each(|x|{println!("{:?}",x)});
-        // let diff = data_ref
-        //     .into_iter()
-        //     .zip(data_ans)
-        //     .map(|(a, b)| Diff::new(a, b.to_f64()))
-        //     .collect::<Vec<_>>();
 
-        // let mut ec = ErrorCollector::new(f16::EPSILON.to_f64(), 0.);
-        // diff.into_iter().for_each(|diff| ec.push(diff));
-        // println!("{ec}");
+        let diff = data_ref
+            .into_iter()
+            .zip(data_ans)
+            .map(|(a, b)| Diff::new(a, b.to_f64()))
+            .collect::<Vec<_>>();
 
-        // let (out, count) = ec.summary();
-        // assert!(out * 1000 <= count);
+        let mut ec = ErrorCollector::new(f16::EPSILON.to_f64(), 0.);
+        diff.into_iter().for_each(|diff| ec.push(diff));
+        println!("{ec}");
+
+        let (out, count) = ec.summary();
+        assert!(out * 1000 <= count);
     }
 }
