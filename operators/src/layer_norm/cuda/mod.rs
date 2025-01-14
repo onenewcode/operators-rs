@@ -182,7 +182,7 @@ mod test {
         };
         // use cuda::memcpy_d2h;
         // use half::f16;
-        use rand::Rng;
+        // use rand::Rng;
 
         let Some(gpu) = Gpu::init() else {
             return;
@@ -191,19 +191,19 @@ mod test {
         let mut cpu_op = RefOp::new(&Cpu);
         let mut gpu_op = Operator::new(&gpu);
 
-        let n = 1024;
-        let d = 1024;
+        let n = 2;
+        let d = 512;
         let epsilon=1.0f32;
         cpu_op.scheme(&dyn_args(F64), 0).unwrap();
         gpu_op.scheme(&dyn_args(F16), 0).unwrap();
-        let mut y = vec![0.0f64; n * d];
-        let mut x = vec![0.0f64; n * d];
-        let mut scale = vec![0.0f64; d];
-        let mut bias = vec![0.0f64; d];
-        rand::thread_rng().fill(&mut y[..]);
-        rand::thread_rng().fill(&mut x[..]);
-        rand::thread_rng().fill(&mut scale[..]);
-        rand::thread_rng().fill(&mut bias[..]);
+        let y = vec![1.0f64; n * d];
+        let  x = vec![1.0f64; n * d];
+        let  scale = vec![1.0f64; d];
+        let  bias = vec![1.0f64; d];
+        // rand::thread_rng().fill(&mut y[..]);
+        // rand::thread_rng().fill(&mut x[..]);
+        // rand::thread_rng().fill(&mut scale[..]);
+        // rand::thread_rng().fill(&mut bias[..]);
         // let data_ans = gpu.apply(|ctx| {
         //     let stream = ctx.stream();
         //     let mut data = cast_load(&data, f16::from_f64, &stream);
@@ -218,12 +218,12 @@ mod test {
         let mut data_ref = y;
         cpu_op
             .launch(
-                &args(F64, n, d, data_ref.as_mut_ptr().cast(),x.as_mut_ptr().cast(),scale.as_ptr().cast(),bias.as_ptr().cast(),epsilon),
+                &args(F64, n, d, data_ref.as_mut_ptr().cast(),x.as_ptr().cast(),scale.as_ptr().cast(),bias.as_ptr().cast(),epsilon),
                 &mut [],
                 &ThisThread,
             )
             .unwrap();
-
+        data_ref.iter().take(10).for_each(|x|{println!("{:?}",x)});
         // let diff = data_ref
         //     .into_iter()
         //     .zip(data_ans)

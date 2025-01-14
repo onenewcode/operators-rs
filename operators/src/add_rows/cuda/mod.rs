@@ -91,16 +91,15 @@ impl crate::Operator for Operator {
             todo!()
         };
         let params =
-            cuda::params![dst_base, src_base, idx_base, b, bsd, msd, nsd, kss, nss, bsi, msi];
+            cuda::params![dst_base, src_base, idx_base, bsd, msd, nsd, kss, nss, bsi, msi];
         let block = gcd(self.max_threads_block, n);
         let p=(n + block - 1) / block;
-        let dsf=b * b * idx_layout.dt().nbytes();
         self.module.launch(
             CString::new(NAME).unwrap(),
             (b as _, m as _,  p as _),
             block as u32,
             params.as_ptr(),
-            dsf,
+            0,
             queue_alloc.queue(),
         );
         Ok(())
@@ -115,7 +114,6 @@ extern "C" __global__ void {NAME}(
     half *__restrict__ dst,
     half const *__restrict__ src,
     unsigned int const *__restrict__ idx,
-    int const b,
     int const bsd,
     int const msd,
     int const nsd,
@@ -124,7 +122,7 @@ extern "C" __global__ void {NAME}(
     int const bsi,
     int const msi)
 {{
-    add_rows(dst, src, idx, b, bsd, msd, nsd, kss, nss, bsi, msi);
+    add_rows(dst, src, idx, bsd, msd, nsd, kss, nss, bsi, msi);
     }}"#
     )
 }
@@ -215,7 +213,7 @@ mod test {
 
         let b = 1;
         let m = 512;
-        let n = 1024;
+        let n = 2048;
         let k = 512;
         let mut d = vec![0.1f64; b * m * n];
         let mut s = vec![0.1f64; k * n];
