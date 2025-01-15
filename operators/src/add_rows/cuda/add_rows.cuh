@@ -1,5 +1,4 @@
-
-template <typename Tdata, typename Tidx>
+template <class Tdata, class Tidx>
 static __device__ void add_rows(
     Tdata *__restrict__ dst,
     Tdata const *__restrict__ src,
@@ -13,8 +12,6 @@ static __device__ void add_rows(
     int const msi)
 {
     auto idx_n = blockIdx.x * blockDim.x + threadIdx.x;
-
-    // 计算索引
     auto idst = blockIdx.z * bsd + blockIdx.y * msd + idx_n * nsd;
     auto isrc = i[blockIdx.z * bsi + blockIdx.y * msi] * kss + idx_n * nss;
     dst[idst] += src[isrc];

@@ -85,18 +85,15 @@ impl crate::Operator for Operator {
         else {
             todo!()
         };
-        let &[ bsi, msi] =
-            cast(&[ bsi, msi], idx_layout.dt().nbytes()).as_slice()
-        else {
+        let &[bsi, msi] = cast(&[bsi, msi], idx_layout.dt().nbytes()).as_slice() else {
             todo!()
         };
-        let params =
-            cuda::params![dst_base, src_base, idx_base, bsd, msd, nsd, kss, nss, bsi, msi];
+        let params = cuda::params![dst_base, src_base, idx_base, bsd, msd, nsd, kss, nss, bsi, msi];
         let block = gcd(self.max_threads_block, n);
-        let dimx=(n + block - 1) / block;
+        let dimx = (n + block - 1) / block;
         self.module.launch(
             CString::new(NAME).unwrap(),
-            ( dimx as _,m as _,b as _),
+            (b as _, m as _, dimx as _),
             block as u32,
             params.as_ptr(),
             0,
@@ -212,9 +209,9 @@ mod test {
         gpu_op.scheme(&dyn_args(F16), 0).unwrap();
 
         let b = 1;
-        let m = 512;
+        let m = 10;
         let n = 2048;
-        let k = 512;
+        let k = m;
         let mut d = vec![0.1f64; b * m * n];
         let mut s = vec![0.1f64; k * n];
         let i: Vec<u32> = (0..=m).cycle().take(m * b).map(|x| x as u32).collect(); // 收集结果到 Vec 中
@@ -270,7 +267,7 @@ mod test {
         let mut ec = ErrorCollector::new(f16::EPSILON.to_f64(), 0.);
         diff.into_iter().for_each(|diff| ec.push(diff));
         println!("{ec}");
-        
+
         let (out, count) = ec.summary();
         assert!(out * 1000 <= count);
     }
