@@ -91,17 +91,16 @@ impl crate::Operator for Operator {
             unreachable!()
         };
         let params = cuda::params![
-            y_base, x_base, scale_base, bias_base, epsilon, d, nsy, dsy, nsx, dsx, dss, dsb
+            y_base, x_base, scale_base, bias_base, epsilon, n,d, nsy, dsy, nsx, dsx, dss, dsb
         ];
         let block = gcd(self.max_threads_block, d);
-        let dimx = (d + block - 1) / block;
         self._handle
             .compile_kernel(NAME, self._handle.device().compute_capability(), || {
-                format_code(block, dimx)
+                format_code(block, d/block)
             })
             .launch(
                 CString::new(NAME).unwrap(),
-                (n as _, dimx as _),
+                n as u32,
                 block as u32,
                 params.as_ptr(),
                 0,
@@ -111,7 +110,7 @@ impl crate::Operator for Operator {
     }
 }
 
-fn format_code(thread_dimx: usize, block_dimx: usize) -> String {
+fn format_code(thread_dimx: usize, unit: usize) -> String {
     format!(
         r#"{CODE}
     extern "C" __global__ void {NAME} (
@@ -120,6 +119,7 @@ fn format_code(thread_dimx: usize, block_dimx: usize) -> String {
     float const *__restrict__ scale,
     float const *__restrict__ bias,
     float epsilon,
+    int const n,
     int const d,
     int const nsy,
     int const dsy,
@@ -128,7 +128,7 @@ fn format_code(thread_dimx: usize, block_dimx: usize) -> String {
     int const dss,
     int const dsb)
 {{
-    layer_norm<{thread_dimx}, {block_dimx}>(y, x, scale, bias, epsilon, d, nsy, dsy, nsx, dsx, dss, dsb);
+    layer_norm<{thread_dimx}, {unit}>(y, x, scale, bias, epsilon, n,d, nsy, dsy, nsx, dsx, dss, dsb);
     }}"#
     )
 }
@@ -193,7 +193,7 @@ mod test {
         };
         use cuda::memcpy_d2h;
         use half::f16;
-        // use rand::Rng;
+        use rand::Rng;
 
         let Some(gpu) = Gpu::init() else {
             return;
@@ -203,18 +203,18 @@ mod test {
         let mut gpu_op = Operator::new(&gpu);
 
         let n = 2;
-        let d = 512;
+        let d = 2048;
         let epsilon = 1.0f32;
         cpu_op.scheme(&dyn_args(F32), 0).unwrap();
         gpu_op.scheme(&dyn_args(F32), 0).unwrap();
-        let y = vec![0.0f32; n * d];
-        let x = vec![1.0f32; n * d];
-        let scale = vec![1.0f32; d];
-        let bias = vec![1.0f32; d];
-        // rand::thread_rng().fill(&mut y[..]);
-        // rand::thread_rng().fill(&mut x[..]);
-        // rand::thread_rng().fill(&mut scale[..]);
-        // rand::thread_rng().fill(&mut bias[..]);
+        let mut y = vec![0.0f32; n * d];
+        let mut x = vec![1.0f32; n * d];
+        let mut scale = vec![1.0f32; d];
+        let mut bias = vec![1.0f32; d];
+        rand::thread_rng().fill(&mut y[..]);
+        rand::thread_rng().fill(&mut x[..]);
+        rand::thread_rng().fill(&mut scale[..]);
+        rand::thread_rng().fill(&mut bias[..]);
         let data_ans = gpu.apply(|ctx| {
             let stream = ctx.stream();
             let mut data = cast_load(&y, f32::from, &stream);
