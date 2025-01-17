@@ -1,62 +1,96 @@
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_reduce.cuh>
 #include <cub/block/block_store.cuh>
-template <int THREADDIMX, int UNIT, typename Tdata, typename Tidx>
-static __device__ void layer_norm(
-    Tdata *__restrict__ y,
-    Tdata const *__restrict__ x,
-    Tidx const *__restrict__ scale,
-    Tidx const *__restrict__ bias,
-    float epsilon,
-    int const n,
-    int const d,
-    int const nsy,
-    int const dsy,
-    int const nsx,
-    int const dsx,
-    int const dss,
-    int const dsb)
+// assert BLOCK_SIZE >= blockDim.x
+template <unsigned int BLOCK_SIZE, class Ta, class Tw>
+static __device__ void padding(
+    Ta *__restrict__ y_,
+    int const stride_y,
+    Ta const *__restrict__ x_,
+    int const stride_x,
+    Tw const *__restrict__ s_,
+    Tw const *__restrict__ b_,
+    float const epsilon)
 {
-    int idx = threadIdx.x*UNIT;
-    Tdata tmp1=Tdata(0);
-    Tdata tmp2=Tdata(0);
-    typedef cub::BlockReduce<Tdata, THREADDIMX> BlockReduce; //<float,..>里面的float表示返回值的类型
-    __shared__ typename BlockReduce::TempStorage temp_sum;
-    __shared__ typename BlockReduce::TempStorage temp_sum2;
-    for (size_t i = idx; i < idx+UNIT; i++)
-    {
-        Tdata tmp_x=x[blockIdx.x * nsx + i * dsx];
-        tmp1+=tmp_x;
-        tmp2+=tmp_x*tmp_x;
-    }
-    
-    Tdata block_sum = BlockReduce(temp_sum).Reduce(tmp1, cub::Sum());
-    Tdata block_sum2 = BlockReduce(temp_sum2).Reduce(tmp2, cub::Sum());
+    auto y = y_ + blockIdx.x * stride_y + threadIdx.x;
+    float const
+        x =x_[blockIdx.x * stride_x + threadIdx.x],
+        s = s_[threadIdx.x],
+        b = b_[threadIdx.x];
+    using BlockOp = cub::BlockReduce<float, BLOCK_SIZE>;
+    __shared__ typename BlockOp::TempStorage sum1;
+    __shared__ typename BlockOp::TempStorage sum2;
+    auto average = BlockOp(sum1).Reduce(x, cub::Sum());
+    auto variance = BlockOp(sum2).Reduce(x * x, cub::Sum());
+    __shared__ float layer[2];
     if (threadIdx.x == 0)
     {
-        y[blockIdx.x] = block_sum;
-        y[ blockIdx.x+ n] = block_sum2;
+        layer[0] = average/ float(BLOCK_SIZE);
+        layer[1] = __frcp_rn(sqrtf(float(variance) / float(BLOCK_SIZE) - powf(layer[0], 2.0)) + epsilon);
     }
     __syncthreads();
-    __syncthreads();
-    __shared__ Tdata cache[2];
+
+    *y = Ta((x- layer[0]) * layer[1] * s + b);
+}
+
+
+template <unsigned int BLOCK_SIZE, unsigned int NUM_ITEMS_THREAD, class Tw, class Ta>
+static __device__ void folding(
+    Ta *__restrict__ y_,
+    int const stride_y,
+    Ta const *__restrict__ x_,
+    int const stride_x,
+    Tw const *__restrict__ s_,
+    Tw const *__restrict__ b_,
+    float const epsilon,
+    unsigned int const items_size)
+{
+    y_ += blockIdx.x * stride_y;
+    x_ += blockIdx.x * stride_x;
+
+    float data[NUM_ITEMS_THREAD],scale[NUM_ITEMS_THREAD],bias[NUM_ITEMS_THREAD];
+    {
+        using BlockOp = cub::BlockLoad<float, BLOCK_SIZE, NUM_ITEMS_THREAD>;
+        __shared__ typename BlockOp::TempStorage temp_storage;
+        BlockOp(temp_storage).Load(x_, data, items_size, 0.f);
+        BlockOp(temp_storage).Load(s_, scale, items_size, 0.f);
+        BlockOp(temp_storage).Load(b_, bias, items_size, 0.f);
+    }
+
+    float sum_average = 0,sum_variance=0;
+#pragma unroll
+    for (unsigned int i = 0; i < NUM_ITEMS_THREAD; ++i)
+    {
+        sum_average+=data[i];
+        sum_variance+= data[i] * data[i];
+    }
+
+    float average, variance;
+    {
+        using BlockOp = cub::BlockReduce<float, BLOCK_SIZE>;
+        __shared__ typename BlockOp::TempStorage temp_average;
+        __shared__ typename BlockOp::TempStorage temp_variance;
+        average = BlockOp(temp_average).Reduce(sum_average, cub::Sum());
+        variance = BlockOp(temp_variance).Reduce(sum_variance, cub::Sum());
+    }
+
+     __shared__ float layer[2];
     if (threadIdx.x == 0)
     {
-        cache[0] = y[blockIdx.x];
-        cache[1] = y[blockIdx.x+n];
-        // 执行中部计算
-        auto e = cache[0] / d;
-        auto e2 = cache[1] / d;
-        auto std = sqrtf(e2 - e * e);
-        cache[0] = e;
-        cache[1] = Tdata(1) / (std + epsilon);
+        layer[0] = average/ float(items_size);
+        layer[1] = __frcp_rn(sqrtf(float(variance) / float(items_size) - powf(layer[0], 2.0)) + epsilon);
     }
     __syncthreads();
-      for (size_t i = idx; i < idx+UNIT; i++)
+
+#pragma unroll
+    for (unsigned int i = 0; i < NUM_ITEMS_THREAD; ++i)
     {
-    auto tmp_x = x[blockIdx.x * nsx + i * dsx];
-    auto tmp_s = scale[i * dss];
-    auto tmp_b = bias[i * dsb];
-    y[blockIdx.x * nsy + i * dsy] = (tmp_x - cache[0]) * cache[1] * tmp_s + tmp_b;
+        data[i] = (data[i]- layer[0]) * layer[1] * scale[i] + bias[i];
+    }
+
+    {
+        using BlockOp = cub::BlockStore<float, BLOCK_SIZE, NUM_ITEMS_THREAD>;
+        __shared__ typename BlockOp::TempStorage temp_storage;
+        BlockOp(temp_storage).Store(y_, data, items_size);
     }
 }
